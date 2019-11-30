@@ -1,30 +1,9 @@
-
-use eventual::Timer;
-use std::time::{Instant, Duration};
-use std::thread;
-use std::sync::mpsc;
-
-use cpal::{StreamData, UnknownTypeOutputBuffer};
 use cpal::traits::{DeviceTrait, EventLoopTrait, HostTrait};
+use std::time::Instant;
+use eventual::Timer;
 
 fn main() {
-    // let x: f64 = 6.0;
-
-    // let a = x.tan();
-    // let b = x.sin() / x.cos();
-
-    // assert_eq!(a, b);
-    time_sequence(10 as u64);
-    // handle.join();
-    // println!("{:?}", result);
-}
-
-fn setup_stream_v2() -> (mpsc::Sender<i32>, thread::JoinHandle<i32>) {
- 
-    // We want to play a frequency so type is i32
-    let (sender, receiver): (std::sync::mpsc::Sender<i32>, std::sync::mpsc::Receiver<i32>) = mpsc::channel();
-
-    // Boilerplate
+    // Create event loop
     let host = cpal::default_host();
     let event_loop = host.event_loop();
     let device = host.default_output_device().expect("no output device available");
@@ -36,79 +15,53 @@ fn setup_stream_v2() -> (mpsc::Sender<i32>, thread::JoinHandle<i32>) {
     let stream_id = event_loop.build_output_stream(&device, &format).unwrap();
     event_loop.play_stream(stream_id).expect("failed to play_stream");
 
-    println!("Sound device: {:?}", device.name());
+    let sample_rate = format.sample_rate.0 as f32;
+    let mut sample_clock = 0f32;
 
-    // play stuff via a i32 channel
-    let handle = thread::spawn( move || {
-        event_loop.run(move |stream_id, stream_result| {
+    let instant = Instant::now();
 
-            let mut frequency = 0;
-            let message = receiver.try_recv();
-            //println!("message: {:?}", message);
-            if message.is_ok() {
-                match message.unwrap() {
-                    i => {
-                        frequency = i as i16;
-                        println!("output sound: {} db ?", frequency)
-                    }
-                };
+    // Produce a sinusoid of maximum amplitude.
+    let mut next_value = || {
+        let sin = (instant.elapsed().as_secs() as f32).sin() + 1.0;
+        sample_clock = (sample_clock + 1.0) % sample_rate;
+        (sample_clock * (440.0 * sin) * 2.0 * 3.141592 / sample_rate).sin()
+    };
+
+    event_loop.run(move |id, result| {
+        let data = match result {
+            Ok(data) => data,
+            Err(err) => {
+                eprintln!("an error occurred on stream {:?}: {}", id, err);
+                return;
             }
+        };
 
-            let stream_data = match stream_result {
-                Ok(data) => data,
-                Err(err) => {
-                    eprintln!("an error occurred on stream {:?}: {}", stream_id, err);
-                    return;
+        match data {
+            cpal::StreamData::Output { buffer: cpal::UnknownTypeOutputBuffer::U16(mut buffer) } => {
+                for sample in buffer.chunks_mut(format.channels as usize) {
+                    let value = ((next_value() * 0.5 + 0.5) * std::u16::MAX as f32) as u16;
+                    for out in sample.iter_mut() {
+                        *out = value;
+                    }
                 }
-            };
-        
-            match stream_data {
-                StreamData::Output { buffer: UnknownTypeOutputBuffer::U16(mut buffer) } => {
-                    for elem in buffer.iter_mut() {
-                        println!("a");
-                        *elem = u16::max_value() / 2;
+            },
+            cpal::StreamData::Output { buffer: cpal::UnknownTypeOutputBuffer::I16(mut buffer) } => {
+                for sample in buffer.chunks_mut(format.channels as usize) {
+                    let value = ((next_value() * 0.5 + 0.5) * std::i16::MAX as f32) as i16;
+                    for out in sample.iter_mut() {
+                        *out = value;
                     }
-                },
-                StreamData::Output { buffer: UnknownTypeOutputBuffer::I16(mut buffer) } => {
-                    for elem in buffer.iter_mut() {
-                        *elem = frequency + 1000;
+                }
+            },
+            cpal::StreamData::Output { buffer: cpal::UnknownTypeOutputBuffer::F32(mut buffer) } => {
+                for sample in buffer.chunks_mut(format.channels as usize) {
+                    let value = next_value() * 0.5 + 0.5;
+                    for out in sample.iter_mut() {
+                        *out = value;
                     }
-                },
-                StreamData::Output { buffer: UnknownTypeOutputBuffer::F32(mut buffer) } => {
-                    for elem in buffer.iter_mut() {
-                        // TODO
-                        println!("c");
-                        *elem = 0.0;
-                    }
-                },
-                _ => (),
-            }
-        });
-   });
-
-   println!("returning value");
-   return (sender, handle);
-}
-
-
-fn time_sequence(duration_in_sec: u64) {
-    let start = Instant::now();
-    let (sender, _) = setup_stream_v2();
-    let timer = Timer::new();
-    // 1000 is the repeat in ms
-    let ticks = timer.interval_ms(500).iter();
-    let mut delta = Instant::now().duration_since(start);
-    for _ in ticks {
-        if delta > Duration::new(duration_in_sec, 0) {
-            break;
+                }
+            },
+            _ => (),
         }
-        let delta_u64 = delta.as_secs() as f64;
-        let sine = (sine_calculator(delta_u64) + 1.6 as f64) * 100 as f64;
-        delta = Instant::now().duration_since(start);
-        let _result = sender.send(sine as i32);
-    }
-}
-
-fn sine_calculator(current: f64) -> f64 {
-    return current.sin();
+    });
 }
